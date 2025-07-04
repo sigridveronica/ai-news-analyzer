@@ -1,106 +1,141 @@
 import os
 import sys
+import tempfile
 import streamlit as st
-from datetime import datetime
-from dotenv import load_dotenv
-
 import pandas as pd
+from io import StringIO
+import contextlib
 
-from news_analysis import fetch_deep_news, generate_value_investor_report
-from image_search import search_unsplash_image
-from md_html import convert_md_folder_to_html
-from csv_utils import detect_changes
+# Add 'src' to Python path so we can import main.py
+sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+from main import run_pipeline
 
-# Add external path
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-EXTERNAL_PATH = os.path.join(BASE_DIR, "external")
-if EXTERNAL_PATH not in sys.path:
-    sys.path.append(EXTERNAL_PATH)
+st.set_page_config(page_title="📰 AI News Analyzer", layout="wide")
+st.title("🧠 AI-Powered Investing News Analyzer")
 
-# Load .env variables
-load_dotenv()
+# === API Key Input ===
+st.subheader("🔐 API Keys")
+openai_api_key = st.text_input("OpenAI API Key", type="password").strip()
+tavily_api_key = st.text_input("Tavily API Key", type="password").strip()
 
-# Folder setup
-DATA_DIR = os.path.join(BASE_DIR, "data")
-HTML_DIR = os.path.join(BASE_DIR, "html")
-CSV_PATH = os.path.join(BASE_DIR, "investing_topics.csv")
+# === Topic Input ===
+st.subheader("📈 Topics of Interest")
+topics_data = []
 
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(HTML_DIR, exist_ok=True)
+with st.form("topics_form"):
+    topic_count = st.number_input("How many topics?", min_value=1, max_value=10, value=1, step=1)
+    
+    for i in range(topic_count):
+        col1, col2 = st.columns(2)
+        with col1:
+            topic = st.text_input(f"Topic {i+1}", key=f"topic_{i}")
+        with col2:
+            days = st.number_input(f"Timespan (days)", min_value=1, max_value=30, value=7, key=f"days_{i}")
+        topics_data.append({"topic": topic, "timespan_days": days})
 
-def build_metrics_box(topic, num_articles):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    return f"""
-> Topic: `{topic}`
-> Articles Collected: `{num_articles}`
-> Generated: `{now}`
-"""
+    submitted = st.form_submit_button("Run Analysis")
 
-def run_analysis(csv_path):
-    current_df = pd.read_csv(csv_path)
-    prev_path = os.path.join(BASE_DIR, "investing_topics_prev.csv")
-
-    if os.path.exists(prev_path):
-        previous_df = pd.read_csv(prev_path)
-        changed_df = detect_changes(current_df, previous_df)
-        if changed_df.empty:
-            st.info("✅ No new topics detected. Skipping reprocessing.")
-            return []
+# === Submission logic ===
+if submitted:
+    if not openai_api_key or not tavily_api_key or not all([td['topic'] for td in topics_data]):
+        st.warning("Please fill in all fields.")
     else:
-        changed_df = current_df
+        os.environ["OPENAI_API_KEY"] = openai_api_key
+        os.environ["TAVILY_API_KEY"] = tavily_api_key
 
-    generated_files = []
+        df = pd.DataFrame(topics_data)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp_csv:
+            df.to_csv(tmp_csv.name, index=False)
+            csv_path = tmp_csv.name
 
-    for _, row in changed_df.iterrows():
-        topic = row.get("topic")
-        timespan = row.get("timespan_days", 7)
-        st.write(f"🔍 Searching: {topic} ({timespan} days)")
+        # Live log capture
+        log_output = st.empty()
+        string_buffer = StringIO()
 
-        news = fetch_deep_news(topic, timespan)
-        if not news:
-            st.warning(f"⚠️ No news found for: {topic}")
-            continue
+        with contextlib.redirect_stdout(string_buffer), st.spinner("🔍 Running analysis..."):
+            output_path = run_pipeline(csv_path, tavily_api_key)
 
-        report_body = generate_value_investor_report(topic, news)
-        image_url, image_credit = search_unsplash_image(topic)
-        metrics_md = build_metrics_box(topic, len(news))
-        full_md = metrics_md + report_body
+        logs = string_buffer.getvalue()
+        log_output.code(logs)
 
-        base_filename = f"{topic.replace(' ', '_').lower()}_{datetime.now().strftime('%Y-%m-%d')}"
-        filename = base_filename + ".md"
-        filepath = os.path.join(DATA_DIR, filename)
+        if output_path and isinstance(output_path, list):
+            st.success("✅ Analysis complete!")
 
-        counter = 1
-        while os.path.exists(filepath):
-            filename = f"{base_filename}_{counter}.md"
-            filepath = os.path.join(DATA_DIR, filename)
-            counter += 1
+            for path in output_path:
+                if os.path.exists(path):
+                    with open(path, 'r', encoding='utf-8') as file:
+                        html_content = file.read()
+                        filename = os.path.basename(path)
 
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(full_md)
+                        st.download_button(
+                            label=f"📥 Download {filename}",
+                            data=html_content,
+                            file_name=filename,
+                            mime="text/html"
+                        )
+                        st.components.v1.html(html_content, height=600, scrolling=True)
+        else:
+            st.error("❌ No reports were generated.")
 
-        generated_files.append(filepath)
 
-    current_df.to_csv(prev_path, index=False)
-    return generated_files
 
-# === Streamlit UI ===
-st.set_page_config(page_title="AI4Finance Investment Analyzer", layout="centered")
-st.title("📈 AI4Finance Investment News Analyzer")
+# import os
+# import sys
+# import tempfile
+# import streamlit as st
+# import pandas as pd
 
-if st.button("🚀 Run Investment Report Generator"):
-    with st.spinner("Running analysis..."):
-        generated = run_analysis(CSV_PATH)
-        convert_md_folder_to_html(DATA_DIR, HTML_DIR)
+# # Add 'src' to Python path so we can import main.py
+# sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+# from main import run_pipeline
 
-    if generated:
-        st.success(f"✅ Generated {len(generated)} report(s).")
-        for file in os.listdir(HTML_DIR):
-            if file.endswith(".html"):
-                html_path = os.path.join(HTML_DIR, file)
-                st.markdown(f"[📰 View Report: {file}](./html/{file})", unsafe_allow_html=True)
-    else:
-        st.info("No new reports created.")
+# st.title("AI-Powered Investing News Analyzer")
 
-st.divider()
-st.markdown("You can edit `investing_topics.csv` to add new topics and re-run the analysis.")
+# # === API Key Input ===
+# st.subheader("🔐 API Keys")
+# openai_api_key = st.text_input("OpenAI API Key", type="password").strip()
+# tavily_api_key = st.text_input("Tavily API Key", type="password").strip()
+
+# # === Topic Input ===
+# st.subheader("📰 Topics of Interest")
+# topics_data = []
+
+# with st.form("topics_form"):
+#     topic_count = st.number_input("How many topics do you want to analyze?", min_value=1, max_value=10, step=1, value=1)
+
+#     for i in range(topic_count):
+#         col1, col2 = st.columns(2)
+#         with col1:
+#             topic = st.text_input(f"Topic {i+1}", key=f"topic_{i}")
+#         with col2:
+#             timespan = st.number_input(f"Timespan (days) for Topic {i+1}", min_value=1, max_value=30, value=7, key=f"days_{i}")
+#         topics_data.append({"topic": topic, "timespan_days": timespan})
+
+#     submitted = st.form_submit_button("Analyze Topics")
+
+# # === Run pipeline on submit ===
+# if submitted:
+#     if not openai_api_key or not tavily_api_key or not all([td['topic'] for td in topics_data]):
+#         st.warning("Please fill in all fields.")
+#     else:
+#         # Set environment variables so downstream modules can use them
+#         os.environ["OPENAI_API_KEY"] = openai_api_key
+#         os.environ["TAVILY_API_KEY"] = tavily_api_key
+
+#         # Save user topics to temp CSV
+#         df = pd.DataFrame(topics_data)
+#         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp_csv:
+#             df.to_csv(tmp_csv.name, index=False)
+#             csv_path = tmp_csv.name
+
+#         with st.spinner("Running analysis..."):
+#             output_path = run_pipeline(csv_path, tavily_api_key)
+
+#         if os.path.exists(output_path):
+#             st.success("✅ Analysis complete!")
+#             with open(output_path, 'r', encoding='utf-8') as file:
+#                 html_content = file.read()
+#                 st.download_button("📥 Download HTML Report", html_content, file_name="news_report.html", mime="text/html")
+#                 st.components.v1.html(html_content, height=600, scrolling=True)
+#         else:
+#             st.error("❌ Something went wrong during the analysis.")

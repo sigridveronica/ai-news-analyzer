@@ -8,6 +8,11 @@ import os
 from tavily import TavilyClient
 import sys
 import os
+import sys
+print("Python path:", sys.executable)
+
+from transformers import pipeline
+
 
 # ✅ Correct path to FinGPT
 FINGPT_PATH = "/Users/sigridveronica/Desktop/Investing/external/FinGPT"

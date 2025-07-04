@@ -1,6 +1,9 @@
+# Don't upload virtual env or local files
 .venv/
+.env
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
 
+# Don't upload generated data
+/data/
+/html/
